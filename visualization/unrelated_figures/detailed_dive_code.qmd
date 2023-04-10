@@ -1,0 +1,735 @@
+---
+title: "Workingdoc"
+format: html
+date: "`r Sys.Date()`"
+author: Elizabeth Goodwin
+format:
+    pdf:
+        toc: true
+        toc-depth:imap : 2
+        fig-dpi: 300
+        number-sections: true
+        documentclass: article
+header-includes:
+- \usepackage{indentfirst}
+- \usepackage{setspace}
+- \usepackage{wrapfig}
+- \usepackage{dcolumn}
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+authors: lizgoodwin
+fontsize: 11pt
+editor_options: 
+  chunk_output_type: console
+---
+
+# R Setup chunk 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(tab.topcaption = T, ft_do_autofit = T, ft.align = "left", fig.height = 10, fig.width = 12, message = FALSE, warning = FALSE)
+
+#setwd("/Users/liz/Documents/Projects/")
+library(tidytable)
+library(tidyverse)
+library(magrittr)
+library(kableExtra)
+library(plm)
+library(prettydoc)
+library(readxl)
+library(printr)
+library(haven)
+library(tsibble)
+library(fabletools)
+library(tsibbledata)
+library(fable)
+library(feasts)
+library(lubridate)
+library(urca)
+library(vars)
+library(mFilter)
+library(texreg)
+library(ggplot2)
+#library(rbbt)
+library(tseries)
+library(ggfortify)
+library(tidyr)
+library(sjlabelled)
+library(ggrepel)
+library(scales)
+library(ggpubr)
+library(plm)
+library(lmtest)
+library(dynlm)
+library(TSstudio)
+library(lfe)
+library(plotly)
+library(modelsummary)
+library(did)
+library(fixest)
+library(cointReg)
+library(rmdformats)
+library(tsibble)
+library(htmltools)
+library(Hmisc)
+library(Hmisc)
+library(stringr)
+library(tidymodels)
+library(broom)
+library(DescTools)
+library(gt)
+library(gtsummary)
+library(DT)
+library(modelsummary)
+library(flextable)
+#library(flexpivot)
+library(memoise)
+library(scales)
+library(echarts4r)
+library(shadowtext)
+library(hrbrthemes)
+library(RPostgres)
+library(dbplyr)
+library(DBI)
+library(ipumsr)
+library(haven)
+library(fuzzyjoin)
+tidymodels_prefer()
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  paste0("\n \\", "footnotesize","\n\n", x, "\n\n \\normalsize")
+})
+set_flextable_defaults(
+  theme_fun = theme_alafoli,
+  font.family = "Source Sans Pro",
+  font.size = 12,
+  big.mark = ",",
+  table.layout = "autofit",
+  digits = 2,
+  decimal.mark = "."
+)
+conflicted::conflict_prefer('%in%', 'tidytable')
+```
+
+
+```{r}
+freedman_f21 <- read_dta('complete-freedmen-data-448-f21.dta') 
+freedman_f22 <- read_dta('complete-freedmen-data-448-f22.dta')
+freedman_f21 |> mutate(dependents_number_1865 = as.character(dependents_number_1865)) %>% tidytable::bind_rows(freedman_f22) -> freedman_init_full
+slave_f21 <- read_dta('complete-slaveholders-data-448-f21.dta') 
+slave_f22 <- read_dta('complete-slaveholders-data-448-f22.dta')
+slave_init <- slave_f21 %>% bind_rows(slave_f22) |> 
+    filter(!is.na(sample))
+freedman_init_full %>%
+    mutate(
+        across(age, as.numeric), 
+        across(dependents_yes_or_no_1865, as.factor),
+        across(dependents_number_1865, as.numeric),
+        across(
+            contains(c('sex', 'gender')),
+           
+             ~{ as_factor(.x) %>% fct_collapse(
+                Female = c('[Female]', '[female]', 'female', 'Female'),
+                Male = c('[Male]', '[male]', 'male', 'Male'),
+                other_level = 'blank'
+            ) } ),
+        across(contains('match_quality'), 
+               ~{as.numeric(.x)}
+               ),
+        across(
+           contains('match_type'),
+            ~{as_factor(.x) %>%
+                fct_collapse(
+                    good_unique = c('good, unique', 'good and unique', 'goood and unique'),
+                    good_nonunique = c('good, nonunique', 'and and nonunique'),
+                    bad = c('bad'),
+                    other_level = 'blank'
+                    
+                ) }
+                    
+        ),
+        across(
+            contains('race'),
+            ~{
+                as_factor(.x) %>%
+                    fct_collapse(
+                        black = c('Black', 'black', '[Black]', "Black [Hawaiian]", 
+                                  "Black [White]", "Colored (Black)", "Colored (Black) [Black]"),
+                        # mulatto = 'Mulatto', 
+                        white = c('White', 'white', 'White [Black]'),
+                        other_level = 'other'
+                        
+                    )
+            }
+        ),
+        across(
+            contains(c('cannotread', 'cannotwrite', 'fatherfor', 'attendedschool')), 
+            ~as_factor(.x) %>% fct_collapse(
+                yes = 'Yes',
+                other_level = 'no'
+            )
+        )
+        
+        
+     ) %>%
+    select(
+     -contains(c('url', 'status_', 'deniedvoting', 'foreign'))
+    ) |> 
+    rename(
+        'age_overall' = age,
+  #      'gender_overall' = sex
+    ) |> 
+    pivot_longer(
+    ends_with(c('1880', '1860', '1865', '1900', '1870', 'overall')),
+    names_to = c('.value', 'year'),
+    names_pattern = "(\\D+)(\\d+)"
+    ) %>%
+    rename_with(
+       .cols =  ends_with('_'),
+        ~ str_sub(.x, end = -2)
+    ) |> 
+    filter(
+        #match_type == 'good_unique',
+        match_quality >= 5
+    )-> freedman_recoded
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+freedman_recoded %>% 
+    group_by(idnumber) %>%
+    summarise(
+    across(
+        c('sex', 'name', 'attendedschool', 'cannotread', 'cannotwrite', 'birthdate'),
+        ~{Mode(.x)}
+    ),
+    match_quality = mean(match_quality, na.rm=T)
+    ) -> freedman_lm
+
+
+```
+
+
+```{r}
+freedman_lm %>%
+    mutate(
+        sex = fct_drop(sex, only = 'blank') %>% as.character()
+    ) %>% lm(match_quality ~ sex, data = .) %>% summary#%>% tidy()
+```
+
+# New
+
+```{r}
+census <- read_dta('usa_00010.dta') %>% tidytable::as_tidytable()
+```
+
+```{r}
+james_wm_init <- census %>% filter.(countyicp %in% c(950, 8300, 1990))
+rest_va <- census %>% filter.(countyicp %notin% c(950, 8300, 1990))
+both_init <- census |> 
+    mutate.(
+        in_wm = ifelse(countyicp %in% c(950, 8300, 1990), 1, 0)
+    )
+census_small <- census %>% filter.(year %in% c(1860, 1910))
+
+```
+
+```{r}
+james_wm <- james_wm_init |> 
+    select.(
+        -c(
+            'hhwt', 
+            'statefip',
+            'perwt'
+        )
+    ) %>% 
+    mutate.(
+        full_lit = ifelse(lit %in% c(4,3,2), 'Some literacy','Illiterate'),
+        year = as.character(year),
+        race = ifelse(racesing == 1, 'white', 'black')
+    ) %>% filter(!is.na(race))
+james_wm |> 
+    group_by.(
+        year, racesing
+    ) |> 
+    summarise.(
+        across.(
+            c(
+                'urban',
+                'metro',
+                'nfams',
+                'famsize',
+                'lit'
+            ),
+            mean
+        )
+    ) %>% 
+   # filter.(racesing %in% c(1,2)) %>% 
+     |> 
+    
+    pivot_wider.(
+        names_from = race,
+        values_from = urban:lit
+    ) %>% view(
+        
+    )
+```
+
+```{r}
+library(ggthemr)
+ggthemr(palette = 'pale')
+```
+
+```{r}
+literacy_over_time_james <- (james_wm) |>  mutate.(lit = as.numeric(lit), year = as.character(year), full_lit = ifelse(lit %in% c(4,3,2), 1, 0)) %>% ggplot(aes(x = year, y = full_lit, group = race, color = race)) + 
+#    geom_histogram(bins = 4, position = 'dodge') + 
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       geom = 'pointrange',
+       width = .5
+       
+    ) +
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       geom = 'line',
+       width = .5
+       
+    ) +
+   # facet_wrap(~year, nrow = 2) + 
+    labs(
+        x = 'Literacy',
+        y = 'Race',
+        title = 'Literacy in the Williamsburg area by race over time',
+        subtitle = 'Percent with some or full literacy, bootstrapped sample means',
+        caption = 'All data from IPUMS full census data'
+    ) + 
+    scale_y_continuous(labels = label_percent())
+ #   coord_cartesian(ylim = c(-1, 1)) 
+literacy_over_time_james
+```
+
+```{r}
+both_init %>% 
+    mutate.(
+        full_lit = ifelse(lit %in% c(4,3,2), 'Some literacy','Illiterate'),
+        year = as.character(year),
+        race = ifelse(racesing == 1, 'white', 'black')
+    ) -> both_init_c1
+both_init_c1 %>%
+    lm(data = .,
+        full_lit ~ race + year + in_wm
+    ) -> both_lit_lm
+both_init_c1 |> 
+    select(year, full_lit, in_wm, race) %>%
+    filter(!is.na(race)) %>%
+  #  group_by.(year) %>%
+    nest.(data = !year) -> nested_both
+lm_mod <-
+  linear_reg(mode = "regression") %>%
+  set_engine("lm")
+
+wf <-
+  workflow() %>%
+  add_model(lm_mod)
+nested_both |> 
+    mutate.(
+        fit = map(data, ~lm(full_lit ~ in_wm + race, data = .x)),
+       tidied = map(fit, tidy),
+       glanced = map(fit, glance)
+    ) -> lit_lm_nest 
+list_lm_nest %>% unnest.(tidied) #%>%
+    select.(-data, -fit) -> lit_lm_tidy
+
+both_init_c1 %>% select.(year, full_lit, in_wm, race) %>%
+    mutate.(across.(full_lit, forcats::as_factor)) %>%
+    filter.(!is.na(race)) %>%
+    nest.(data = !in_wm) %>%
+    mutate.(
+      #  year = as.numeric(year),
+        fit = map(data, ~lm(full_lit ~ race + year, data = .)),
+        tidied = map(fit, tidy), 
+        glanced = map(fit, glance)
+    )-> linearbyloc
+linearbyloc_list <- linearbyloc |> select.(in_wm, fit) %>% deframe()
+modelsummary(linearbyloc_list, mccores = 5)
+```
+
+
+```{r}
+datasummary_crosstab(
+    year ~ full_lit * race,
+    statistic = 1 ~ 1 + Percent('row'),
+    data = james_wm
+)
+
+james_wm_summary <- james_wm |>  select.(year, race, famsize, school, lit, labforce,nmothers, nfathers, occscore, edscor50) %>% filter(year %in% c('1860', '1910'))  %>% 
+    dplyr::mutate(
+    across(c('occscore', 'edscor50', 'famsize'),  ~ifelse(.x == 999 | .x == 999.9, NA, .x)),
+    literacy = ifelse(lit == 9, NA, lit),
+    labforce = ifelse(labforce == 0, NA, (labforce-1)),
+  # across(!c(occscore,edscor50), forcats::as_factor)
+) %>% select(-lit) %>% rename(
+    'Occupational Income Score' = occscore,
+    'Predicted Years of College' = edscor50,
+    'Size of Family' = famsize, 
+    'Number of Mothers' = nmothers,
+    'Number of Fathers' = nfathers,
+    'In the labor force' = labforce
+)
+james_wm_summary %>% datasummary_skim(output = 'latex') %>% kable_styling(latex_options =c( "striped", 'scale_down'), font_size = 10) -> james_wm_sumtab #%>% 
+    #kableExtra::save_kable('james_wm_summary.tex')
+saveRDS(james_wm_sumtab, 'james_wm_sumtab')
+
+va_data <- census_small |>
+    mutate(
+        race = ifelse(racesing == 1, 'white', 'black')
+    ) |> 
+    select.(year, race, famsize, school, lit, labforce,nmothers, nfathers, occscore, edscor50, countyicp) %>% filter(year %in% c('1860', '1910'))  %>% 
+    dplyr::mutate(
+    across(c('occscore', 'edscor50', 'famsize'),  ~ifelse(.x == 999 | .x == 999.9, NA, .x)),
+    literacy = ifelse(lit == 9, NA, lit),
+    labforce = ifelse(labforce == 0, NA, (labforce-1)),
+  # across(!c(occscore,edscor50), forcats::as_factor)
+) %>% select(-lit) %>% rename(
+   # 'Occupational Income Score' = occscore,
+    'Size of Family' = famsize, 
+    'Number of Mothers' = nmothers,
+    'Number of Fathers' = nfathers,
+    'In the labor force' = labforce
+)
+
+va_data %>% datasummary_skim(output = 'latex') %>% kable_styling(latex_options =c( "striped", 'scale_down'), font_size = 10) -> va_summary #%>% 
+saveRDS(va_summary, 'va_summary')
+```
+```{r}
+
+va_data_1910 <- census_small |>
+    mutate(
+        race = ifelse(racesing == 1, 'white', 'black')
+    ) |> 
+    filter.(year == 1860) %>% 
+    select.(year, race, famsize, school, lit, labforce,nmothers, nfathers, occscore, edscor50) %>% filter(year %in% c('1860', '1910'))  %>% 
+    dplyr::mutate(
+    across(c('occscore', 'edscor50', 'famsize'),  ~ifelse(.x == 999 | .x == 999.9, NA, .x)),
+    literacy = ifelse(lit == 9, NA, lit),
+    labforce = ifelse(labforce == 0, NA, (labforce-1)),
+  # across(!c(occscore,edscor50), forcats::as_factor)
+) %>% select(-lit, -year) %>% rename(
+    'Occupational Income Score' = occscore,
+    'Size of Family' = famsize, 
+    'Number of Mothers' = nmothers,
+    'Number of Fathers' = nfathers,
+    'In the labor force' = labforce
+)
+
+va_data_1860 <- census_small |>
+    mutate(
+        race = ifelse(racesing == 1, 'white', 'black')
+    ) |> 
+    filter.(year == 1910) %>% 
+    select.(year, race, famsize, school, lit, labforce,nmothers, nfathers, occscore, edscor50) %>% filter(year %in% c('1860', '1910'))  %>% 
+    dplyr::mutate(
+    across(c('occscore', 'edscor50', 'famsize'),  ~ifelse(.x == 999 | .x == 999.9, NA, .x)),
+    literacy = ifelse(lit == 9, NA, lit),
+    labforce = ifelse(labforce == 0, NA, (labforce-1)),
+  # across(!c(occscore,edscor50), forcats::as_factor)
+) %>% select(-lit, -year) %>% rename(
+    'Occupational Income Score' = occscore,
+ #   'Predicted Years of College' = edscor50,
+    'Size of Family' = famsize, 
+    'Number of Mothers' = nmothers,
+    'Number of Fathers' = nfathers,
+    'In the labor force' = labforce
+)
+va_data_1860 %>% datasummary_skim(output = 'latex') %>% kable_styling(latex_options =c( "striped", 'scale_down'), font_size = 10) -> va_summary_1860 #%>% 
+saveRDS(va_summary_1860, 'va_summary1860')
+
+va_data_1910 %>% datasummary_skim(output = 'latex') %>% kable_styling(latex_options =c( "striped", 'scale_down'), font_size = 10) -> va_summary_1910 #%>% 
+saveRDS(va_summary_1910, 'va_summary1910')
+```
+
+
+```{r}
+# Recoding 
+
+va_data_recode <- va_data |> 
+    mutate.(
+        literacy = case_match.(literacy,
+            0 ~ 'N/A',
+            1 ~ 'Illiterate',
+            2 ~ 'Literate',
+            3 ~ 'Literate',
+            4 ~ 'Literate'
+        ),
+        Location = ifelse(countyicp %in% c(950, 8300, 1990), 'Williamsburg Area', 'VA'),
+        year = as.character(year),
+        education = case_when.(edscor50 == 999.9 ~ 0, TRUE ~ edscor50)
+    )
+edu_ry_tab <- va_data_recode %>% 
+        mutate.(across('education', as.numeric)) %>%
+        group_by.(year, Location, race) |> 
+    summarise.(
+        n = n(education),
+     #   min = min(education, na.rm = T),
+        median = median(education, na.rm = T),
+     #   max = max(education, na.rm = T),
+        mean = mean(education, na.rm = T),
+        sd = sd(education, na.rm = T),
+    )
+edu_sy_tab <- va_data_recode %>% 
+        mutate.(across('education', as.numeric)) %>%
+        group_by.(year, Location, sex) |> 
+    summarise.(
+        n = n(education),
+     #   min = min(education, na.rm = T),
+        median = median(education, na.rm = T),
+     #   max = max(education, na.rm = T),
+        mean = mean(education, na.rm = T),
+        sd = sd(education, na.rm = T),
+    )
+
+edu_ry_tab2 <- edu_ry_tab %>% kable('latex', booktabs = T, digits = 1) %>% kableExtra::kable_styling(latex_options = c('striped'))
+saveRDS(edu_ry_tab2, 'edu_ry_tab')
+   # mutate.(percent = paste0(round(n*100 / sum(n),1), "%"), .by = c(year, race, Location)) %>% 
+    ungroup() %>%
+    na.omit() %>%
+    pivot_wider(contains(c('year', 'race', 'Location', 'percent')), names_from = c(Location, literacy), values_from = percent, names_sep = "_") |>  
+    kbl(
+      "latex",
+      booktabs = T,
+      align = c("r"),
+      col.names = c('year', 'race', "Illiterate","Literate","N/A","Illiterate", 'Literate', 'N/A')) -> tabu
+
+  kable_styling(tabu,latex_options = "striped",
+                 font_size = 12) %>%
+  add_header_above(c(" " = 2, "VA" = 3, "Williamsburg/James/York" = 3)) -> comb_data_tab 
+    
+edu_race_year <- ggplot(
+    va_data_recode, 
+    aes(y = education, x = race, fill = race)) +
+    geom_boxplot(color = 'black', outlier.colour = 'darkgrey', outlier.alpha = .5) + 
+    scale_y_sqrt(breaks = scales::trans_breaks('sqrt', function(x) x^2,n = 5), label = scales::label_percent(scale = 1)) +
+    facet_wrap(year~Location, ncol = 4) +
+    labs(
+        x = 'Race and Year', 
+        y = "Percent with > 1yr college", 
+        color = "Race", 
+        title = 'Estimated percent with > 1yr of college by race, year, and location',
+        subtitle = 'Used occupational income estimates. Grouped by race, year, and location.'
+    )
+    
+saveRDS(edu_race_year, 'edu_race_year2')
+
+```
+```{r}
+inc_ry_tab_full <- va_data_recode %>% 
+        select.(year, Location, race, occscore) %>%
+   # filter(occscore != 0) %>%
+        mutate.(across('occscore', as.numeric)) %>%
+        group_by.(year, Location, race) |> 
+    summarise.(
+        n = n(occscore),
+     #   min = min(education, na.rm = T),
+        median = median(occscore, na.rm = T),
+     #   max = max(occscore, na.rm = T),
+        mean = mean(occscore, na.rm = T),
+        sd = sd(occscore, na.rm = T),
+    #   mean_log = (mean(log(occscore)))
+    )
+inc_ry_tab_zero <- va_data_recode %>% 
+        select.(year, Location, race, occscore) %>%
+    filter(occscore != 0) %>%
+        mutate.(across('occscore', as.numeric), log_occ = log(occscore)) %>%
+        group_by.(year, Location, race) |> 
+    summarise.(
+        n = n(occscore),
+     #   min = min(education, na.rm = T),
+        median = median(occscore, na.rm = T),
+     #   max = max(occscore, na.rm = T),
+        mean = mean(occscore, na.rm = T),
+        sd = sd(occscore, na.rm = T),
+      mean_log = mean(log_occ)
+    )
+inc_ry_tab_full2 <- inc_ry_tab_full %>% kable('latex', booktabs = T, digits = 1) %>% kableExtra::kable_styling(latex_options = c('striped'))
+saveRDS(inc_ry_tab_full2, 'inc_ry_tab_full')
+inc_ry_tab_zero2 <- inc_ry_tab_zero %>% kable('latex', booktabs = T, digits = 1) %>% kableExtra::kable_styling(latex_options = c('striped'))
+saveRDS(inc_ry_tab_zero2, 'inc_ry_tab_zero')
+
+
+   # mutate.(percent = paste0(round(n*100 / sum(n),1), "%"), .by = c(year, race, Location)) %>% 
+    ungroup() %>%
+    na.omit() %>%
+    pivot_wider(contains(c('year', 'race', 'Location', 'percent')), names_from = c(Location, literacy), values_from = percent, names_sep = "_") |>  
+    kbl(
+      "latex",
+      booktabs = T,
+      align = c("r"),
+      col.names = c('year', 'race', "Illiterate","Literate","N/A","Illiterate", 'Literate', 'N/A')) -> tabu
+
+  kable_styling(tabu,latex_options = "striped",
+                 font_size = 12) %>%
+  add_header_above(c(" " = 2, "VA" = 3, "Williamsburg/James/York" = 3)) -> comb_data_tab 
+    
+inc_ry_fig <- ggplot(
+    va_data_recode %>%  filter(occscore != 0), 
+    aes(y = log(occscore), x = year, color = race)) +
+    stat_summary(fun=mean, geom="pointrange",size = 1, fun.data = mean_se) +
+# stat_summary(fun=mean, geom="line", aes(group=1)) +
+ # stat_summary(, geom = "errorbar", color = 'black', width = .2) +  
+   # geom_boxplot(color = 'black', outlier.colour = 'darkgrey', outlier.alpha = .5) + 
+  #  scale_y_sqrt(breaks = scales::trans_breaks('sqrt', function(x) x^2,n = 5), label = scales::label_percent(scale = 1)) +
+    facet_wrap(~Location, ncol = 4) +
+    labs(
+        x = 'Year', 
+        y = "Log of Occscore", 
+        color = "Race", 
+        title = 'Mean log of Occupational Income Score',
+        subtitle = 'By year, location, and race'
+    ) 
+saveRDS(inc_ry_fig, 'inc_ry_fig')
+```
+
+```{r}
+
+datasummary_crosstab(
+    year*race ~ literacy,
+    data = va_data_recode, output = 'latex') %>% kable_styling(latex_options = c('striped'), font_size = 12) -> va_data_tab
+saveRDS(va_data_tab, 'va_data_tab')
+
+
+va_data_recode |> 
+        count.(year, race, Location, literacy) |> 
+    mutate.(percent = paste0(round(n*100 / sum(n),1), "%"), .by = c(year, race, Location)) %>% 
+    ungroup() %>%
+    na.omit() %>%
+    pivot_wider(contains(c('year', 'race', 'Location', 'percent')), names_from = c(Location, literacy), values_from = percent, names_sep = "_") |>  
+    kbl(
+      "latex",
+      booktabs = T,
+      align = c("r"),
+      col.names = c('year', 'race', "Illiterate","Literate","N/A","Illiterate", 'Literate', 'N/A')) -> tabu
+
+  kable_styling(tabu,latex_options = "striped",
+                 font_size = 12) %>%
+  add_header_above(c(" " = 2, "VA" = 3, "Williamsburg/James/York" = 3)) -> comb_data_tab 
+ # summarise.(.by = c('year', 'race', 'Location'))
+saveRDS(comb_data_tab, 'comb_data_tab')
+datasummary_crosstab(
+    year* race*Location ~ literacy,
+    data = va_data_recode, output = 'latex', statistic = 1~Percent('row')) %>% kable_styling(latex_options = c('striped'), font_size = 12) -> va_wm_lit_tab
+saveRDS( va_wm_lit_tab, 'va_wm_lit_tab')
+```
+
+```{r}
+
+```
+
+```{r}
+crosswalk <- read_dta('crosswalk_1850_1940.dta') %>% filter(abe_nysiis_standard == 1) |> select(1:2) %>% as_tidytable()
+census_1850 <- census %>% filter.(year == 1850) %>% inner_join.(crosswalk, by = c('histid' = 'histid_1850'))
+census_1940 <- census %>% filter.(year == 1940) %>% inner_join.(crosswalk, by = c('histid' = 'histid_1940'))
+
+census_1850_1940 <- census_1850 %>% inner_join.(census_1940, by = c('histid_1940' = 'histid'))
+
+
+```
+```{r}
+ mutate.(
+        literacy = case_match.(literacy,
+            0 ~ 'N/A',
+            1 ~ 'Illiterate',
+            2 ~ 'Literate',
+            3 ~ 'Literate',
+            4 ~ 'Literate'
+        ),
+        Location = ifelse(countyicp %in% c(950, 8300, 1990), 'Williamsburg Area', 'VA'),
+        year = as.character(year),
+        education = case_when.(edscor50 == 999.9 ~ 0, TRUE ~ edscor50)
+    )
+```
+
+
+```{r}
+crosswalk <- read_dta('crosswalk_1860_1910.dta') %>% filter(abe_race_nysiis_standard == 1) |> select(1:2) %>% as_tidytable()
+census_1860 <- census %>% filter.(year == 1860) %>% inner_join.(crosswalk, by = c('histid' = 'histid_1860'))
+census_1910 <- census %>% filter.(year == 1910) %>% inner_join.(crosswalk, by = c('histid' = 'histid_1910'))
+
+census_1860_1910_init <- census_1860 %>% inner_join.(census_1910, by = c('histid_1910' = 'histid'), suffix = c('1860', '1910'))
+
+census_1860_1910 <- census_1860_1910_init %>%
+    select(
+        tidyselect::contains(c(
+            'hhwt',
+            'countyicp',
+            'urban', 'metro',
+            'city', 'nfams', 'lit', 'labforce',
+            'occ','edsc', 'race'
+        ))
+    ) %>% mutate.(
+        if_wm1860 = ifelse(countyicp1860 %in% c(950, 8300, 1990), 1, 0),
+        
+        if_wm1910 = ifelse(countyicp1910 %in% c(950, 8300, 1990), 1, 0),
+        Location = ifelse(if_wm1860*if_wm1910 == 1, 'Williamsburg Area', 'VA'),
+        across(contains('lit'), ~ifelse(.x %in% c(4,3,2), 1,0)),
+    lit = lit1910-lit1860,
+     race = ifelse(racesing1860 == 1, 'white', 'black'),
+    education1860 = case_when.(edscor501860 == 999.9 ~ 0, TRUE ~ edscor501860),
+
+    education1910 = case_when.(edscor501910 == 999.9 ~ 0, TRUE ~ edscor501910),
+    education = education1910 - education1860
+)
+```
+
+
+```{r}
+#dataset information 
+
+census %>% census_1850_1940 %>%
+```
+
+```{r}
+dla <- census_1860_1910 %>% mutate.(race = factor(race), white = ifelse(race == 'white', 1, 0), VA = ifelse(Location == 'VA',1,0), '1860' = lit1860)
+litmodels <- list(
+    'Only 1860' = glm(data = dla, lit1910 ~ lit1860, family = 'binomial'),
+    '+race' = glm(data = dla, lit1910 ~ lit1860 + white, family = 'binomial'),
+    '+race*1860' = glm(data = dla, lit1910 ~ lit1860 + white*lit1860, family = 'binomial'),
+    '1860 + loc' = glm(data = dla, lit1910 ~ lit1860 + VA, family = 'binomial'),
+    '+loc*1860' = glm(data = dla, lit1910 ~ lit1860 + VA + VA*lit1860, family = 'binomial'),
+    'both' = glm(data = dla, lit1910 ~ lit1860 +  VA + white + VA*lit1860 + white*lit1860, family = 'binomial'),
+    'all' = glm(data = dla, lit1910 ~ lit1860 +  VA + white + VA*lit1860 + white*lit1860 + white*lit1860*VA)
+   # 'Location and Race' = lm(data = dla, lit ~ race + Location),
+   # 'Both Interacted'   = lm(data = dla, lit ~ race + Location + race*Location) 
+)
+cm = c('racewhite' = 'White', 'race [white]' = 'White', 'Location' = 'Williamsburg Area', 'racewhite:if_wm' = 'White and in Williamsburg Area')
+litmodels_fig <-modelsummary::modelplot(litmodels) + 
+    aes(shape = ifelse(p.value < 0.05, "Significant", "Not significant")) +
+      geom_vline(xintercept = 0, linetype = 3) +
+    labs(shape = 'Significant', title = 'Coefficients of Various Literacy Logistic Models', y = 'Coefficients', x = 'Estimate') 
+modelsummary(litmodels, stars = T, output = 'latex') %>% kable_styling(latex_options =c( "striped" ), font_size = 10) %>% landscape() -> litmodels_tab
+saveRDS(litmodels_tab, 'litmodels')
+saveRDS(litmodels_fig, 'litmodels_fig')
+```
+
+```{r}
+edmodels <- list(
+    'race' = lm(data = dla, education ~ white),
+    'location' = lm(data = dla, education ~ VA), 
+    'race + location' = lm(data = dla, education ~ white + VA),
+    '+ interaction' = lm(data = dla, education ~ white + VA + white*VA)
+    
+    #'Location and Race' = lm(data = dla, education ~ race + if_wm),
+  #  'Both years' = lm(data = dla, education1910 ~ education1860 + race + education1860*race)
+    #'Both Interacted'   <- lm(data = dla, lit ~ race + if_wm + race*if_wm) 
+)
+cm = c('racewhite' = 'White', 'race [white]' = 'White', 'if_wm' = 'Williamsburg Area', 'racewhite:if_wm' = 'White and in Williamsburg Area')
+edmodel_graph <- modelsummary::modelplot(edmodels) + aes(shape = ifelse(p.value < 0.05, "Significant", "Not significant")) +
+      geom_vline(xintercept = 0, linetype = 3) +
+    labs(shape = 'Significant', title = 'Coefficients of Various Literacy Logistic Models', y = 'Coefficients', x = 'Estimate') 
+modelsummary(edmodels, stars = T, output = 'latex') %>% kable_styling(latex_options =c( "striped" ), font_size = 10)  -> edmodels_tab
+saveRDS(edmodels_tab, 'edmodels')
+saveRDS(edmodel_graph, 'edmodels_fig')
+save
+
+```
+
+
+

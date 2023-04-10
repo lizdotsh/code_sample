@@ -1,0 +1,613 @@
+---
+title: "Freedman Bureau Visualization"
+author: "Elizabeth Goodwin"
+format: 
+    html:
+        df-print: paged
+        toc: true
+        warning: false
+        self-contained: true
+        code-fold: true
+        code-copy: hover
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+#| echo: false
+#| output: false
+#| warning: false
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+library(purrr)
+library(ggthemr)
+ggthemr(palette = 'pale')
+
+```
+
+## Code from code-sample.R
+
+This is just a paste of everything in code_sample.R so it is easy to view inside the visualization (just expand the code blocks with the buttons). I just added it so you don't have to move between files. 
+
+```{r eval = F}
+library(stringr)
+library(haven)
+library(tidytable)
+library(purrr)
+library(forcats)
+library(tidystringdist)
+freedman_f21 <- read_dta('source_data/complete-freedmen-data-448-f21.dta') 
+freedman_init_full <- read_dta('source_data/complete-freedmen-data-448-f22.dta')|> bind_rows.(freedman_f22)
+# Sorry I would normally expand my code a lot more but I just slightly above the code line limit and had to compress some stuff ahah
+freedman_recoded <- freedman_init_full |> 
+    mutate.(
+        across.(contains(c('age', 'dependents_number_1865','match_quality')), as.numeric), 
+        across.(dependents_yes_or_no_1865, as_factor),
+        across.(contains(c('sex', 'gender')), ~ {
+            as_factor(.x) |> fct_collapse(
+                Female = c('[Female]', '[female]', 'female', 'Female'),
+                Male = c('[Male]', '[male]', 'male', 'Male'),
+                other_level = 'blank'
+            )}
+        ),
+        across.(contains('match_type'),~{
+            as_factor(.x) %>% 
+                fct_collapse(
+                    good_unique = c('good, unique', 'good and unique', 'goood and unique'),
+                    good_nonunique = c('good, nonunique', 'and and nonunique'),
+                    bad = c('bad'),
+                    other_level = 'blank'
+                    )
+            }
+        ),
+        across.(contains('race'),~{
+                str_extract(str_to_lower(.x), 'white|black|mulatto|blank') %>% 
+                    coalesce(.x) %>% na_if.("") %>% replace_na("other")
+            }
+        ),
+        across.(contains(
+            c('cannotread', 'cannotwrite', 'fatherfor', 'attendedschool', 'dependents_yes_or_no')), 
+            ~as_factor(.x) %>% fct_collapse(yes = 'Yes',other_level = 'no')
+        ),
+        across.(everything(), ~{na_if(.x,c("", "blank"))}),
+        across.(contains('occupation'), ~str_to_lower(.x)),
+        age_original = age,
+        match_quality_1865 = 10,
+        match_type_1865 = 'good_unique'
+    ) %>% 
+    select.(-contains(c('url', 'status_', 'deniedvoting', 'foreign'))) %>% 
+    rename(
+        'age_1865' = age,
+        'name_1865' = fullname,
+        'gender_1865'= sex,
+    ) 
+filter_occupation <- function(x){ #extracted this, get_state_name, and remove_state into separate functions 
+    case_when.(                   #so it would look a lot cleaned/not all be in one big anonymous function. 
+        str_detect(x,paste0('doctor|dressmaker|barber|carpenter|laundress|butcher|nurse',
+                             '|physician|police|store\\skeeper|mason|minister|cobbler|shoe|tailor|',
+                             '\\w\\smaker|mid-wife|upholsterer|teacher|plasterer')) ~ 'Skilled',
+        str_detect(x,'farm|lab(o|ou)r|planter|field|pick') ~ 'Farm Laborer',
+        str_detect(x,'factory|\\s(fac|mill|fcty)|mine|miller|wood') ~ 'Factory/Mill/Mine Worker',
+        str_detect(x,'school|student') ~ 'Student',
+        str_detect(x,'water|oyster|seaman|sailor') ~ 'Oyster/Water Worker',
+        str_detect(x,'home|house|domestic|servant|dom|wash|maid|garden|cook') ~ 'Domestic Servant',
+        str_detect(x, 'waiter|hotel|janitor|clerk|store|shops|porter|coachman') ~ 'Store/Hotel/Restaurant Worker',
+        str_detect(x, 'yes|read') ~ 'Other',
+        str_detect(x, '^no|not\\sany|none|n/a|na|child|(no|without)\\soccupation|0|work|\\.') ~ '',
+        TRUE ~ x
+    )  %>% replace_na('') %>% fct %>% fct_lump_min(10, other_level = 'Other') %>% return()
+}
+get_state_name <- function(str){ 
+    map_vec(
+        str_to_title(str) %>% replace_na(''), ~{
+            str_split_1(.x, boundary('word')) %>% 
+            detect(~.x %in% state.name, .default = NA)
+        }
+        ) %>% str_to_title() %>% return()
+}
+remove_state <- function(vec){
+    map_vec(replace_na(vec, "") %>% str_to_title(), 
+        ~{
+            str_split_1(.x, ',') %>% 
+            str_remove('^\\s') %>%
+            setdiff(c(state.name, 'USA', 'Usa')) %>%
+            str_c(collapse = ", ")
+        }
+    ) %>% return()
+}
+freedman_pivoted <- freedman_recoded %>% 
+    pivot_longer(ends_with(c('1880','1865', '1860', '1900', '1870')),
+        names_to = c('.value', 'year'),
+        names_pattern = "(\\D+)(\\d+)"
+    ) %>%
+    rename_with(.cols =  ends_with('_'), ~str_sub(.x, end = -2)) %>%
+    mutate.(
+        occupation = filter_occupation(occupation),
+        across.(contains('residence'), 
+            list(state = get_state_name, city = remove_state), 
+            .names = '{.col}_{.fn}'
+        ),
+        across.(contains('_city'), 
+            list(
+                county = ~str_extract(.x, '(?<=\\,\\s)[a-zA-Z\\s]*$') %>% replace_na(''), 
+                town = ~str_extract(.x, '^.*(?=\\,\\s\\w+)') %>% replace_na('')
+                )
+        ),
+        residence_city_county = case_when(
+            year == 1865 ~ residence_city,
+            residence_city_county == '' ~ residence_city_town, 
+            TRUE ~ residence_city_county
+         ),
+        residence_city_town = if_else(residence_city_county == residence_city_town, '', residence_city_town),
+        age_projected = age_original + (as.numeric(year) - 1865),
+        match_quality = if_else(match_type == 'bad', 0, match_quality),
+        first_name = str_extract(name, '^\\w*'),
+        last_name = str_extract(name, '[:alnum:]+(?=($|\\s$|(\\s\\[[\\w\\s\\.\\(\\)]+\\])*$))')
+    )%>%
+    mutate(
+        postoffice = postoffice[[2]],
+        dependents = dependents_yes_or_no[[1]],
+        married = ifelse(!is.na(marriageyear[[4]]), 1, 0),
+        marriageyear = marriageyear[[4]],
+        .by = c('idnumber')
+    ) %>% 
+    arrange(idnumber)%>%
+    rename.(
+    'age_recorded' = age
+    ) %>%
+    filter(!is.na(name)) %>% 
+    select.(
+        idnumber, year,match_type, match_quality,first_name,last_name,
+        age_projected, age_recorded, gender,occupation, race, married,postoffice,
+        residence_state:residence_city_town,dependents,marriageyear,cannotread,cannotwrite
+    ) 
+write.csv(freedman_pivoted, 'visualization/outputs/freedman_fully_parsed.csv')
+
+best_matched <- freedman_pivoted %>% 
+    slice_max.(order_by = match_quality, n = 2, .by = 'idnumber', with_ties = F) %>% 
+    select(idnumber, first_name, last_name, match_quality, occupation, age_projected, race) %>% 
+    mutate.(num = row_number(desc(match_quality)),
+            .by = 'idnumber') %>% 
+    arrange(idnumber, num) %>%
+    filter(sum(num) == 3, .by = idnumber) %>% 
+    mutate(num = if_else.(num == 1, 'orig', 'best')) %>% 
+    pivot_longer(contains(c('first_name', 'last_name')), names_to = 'name_type', values_to = 'name') %>% 
+    filter(!is.na(idnumber)) %>% 
+    pivot_wider(names_from = c('num'), values_from = c('name', 'occupation', 'match_quality', 'age_projected', 'race')) %>% 
+    select(!c(match_quality_orig, race_orig)) %>% 
+    rename('match_quality' = match_quality_best) %>% 
+    mutate(age_difference = age_projected_best - age_projected_orig) %>% 
+    tidy_stringdist(v1 = name_orig, v2 = name_best, method = c('osa', 'lv', 'lcs', 'jw', 'soundex')) 
+print('done')
+write.csv(best_matched,'visualization/outputs/freedman_best_matched_name_distance.csv')    
+
+```
+
+## Introduction
+
+This file is a collection of a few simple graphics created from the script. It is an interactive quarto document created by the .Qmd file. It is also significantly longer than it first appears, as most of the details are hidden behind the tabsets in each section. I did this so it requires less scrolling and each set of tabsets includes plots on similar topics. I also included some (much more polished) graphics at the end I created unrelated to this project. Sorry if this is a little much, just figured I should include as much as possible graphics wise. I also included a deeper dive paper I wrote on this same issue if you are curious. Feel free to ignore any of the extra included stuff though, I don't want to take up too much of your time.  
+
+```{r}
+#| output: false
+#| warning: false
+freedman <- read_csv('outputs/freedman_fully_parsed.csv')
+name_dist <- read_csv('outputs/freedman_best_matched_name_distance.csv') %>% 
+    mutate(
+        across(contains('occupation'), ~replace_na(.x, 'blank')),
+        across(occupation_best, ~replace_na(.x, 'blank')),
+        same_job = case_when(
+            (occupation_orig == 'blank') & (occupation_best == 'blank') ~ 'blank',
+            occupation_orig == occupation_best ~ 'yes',
+            .default = 'no' 
+        )
+    )
+```
+
+
+
+## Match Bias
+
+```{r}
+#| output: false
+#| warning: false
+
+match_bias_plots <- freedman %>%
+    filter(year != 1865) %>% 
+    mutate(
+        across(
+            c(race, occupation, age_projected, gender),
+            as.character
+        )
+    ) %>% 
+  pivot_longer(c(race, occupation, gender), names_to = 'bias_var', values_to = 'type') %>% 
+  mutate(type = type %>% replace_na('blank')) %>% 
+ 
+  group_nest(bias_var) %>% 
+  deframe() %>% 
+  map(., ~ {
+    ggplot(., aes(y = type, x = match_quality, color = type)) + 
+      stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       width = .5
+    ) +
+      theme(legend.position = 'none') + 
+    labs(x = 'Match Quality', 
+        caption = 'Bootstrapped sample means with 95% CIs'
+    )
+  }) 
+#match_bias_plots
+```
+
+The matching process is far from endogenous. Race, sex, occupation, class, etc will likely all effect how likely a given group is to actually be recorded correctly in the census. This is especially true in this time period, as literacy is quite low. Many people didn't have consistent spelling or even names. This is a complicated topic and linking endogeneity is something you could write a book about.
+
+::: {.panel-tabset}
+
+### Age
+
+First one here is age. Notice there are some that go to zero and get quite old. These all represent people that we know are dead in the real data (hence referenced with a match quality of zero). We see there is a very strong correlation between age and match quality, with the younger participants almost always having significantly increased match quality. It also appears to be quite linear.  
+```{r}
+#| warning: false
+(
+    
+freedman %>%
+    filter(year != 1865) %>% 
+    ggplot( aes(x = age_projected, y = match_quality, color = age_projected)) + 
+   geom_smooth(method = 'lm', alpha = .3) +
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'point',
+       width = .5
+    ) +
+    
+      theme(legend.position = 'none') + 
+    labs(y = 'Match Quality') + 
+    labs(
+        title = 'Match Rating by Projected Age',
+        x = 'Age',
+        caption = 'Bootstrapped sample means with 95% CIs'
+    )
+) %>% ggplotly
+```
+
+### Sex
+Aside from those in which sex was not apparent on the census form, there does not seem to be a large difference in overall match quality between these groups. The small difference there is is not remotely statistically significant. 
+```{r}
+#| warning: false
+(
+match_bias_plots$gender +
+    labs(
+        title = 'Match Rating by Sex',
+        y = 'Sex'
+    )
+) %>% ggplotly
+```
+
+### Occupation
+There is relatively wide variation within match quality by occupation. The one that stands the most out is Oyster workers. This group represented anyone to do with basically anything on the water when I encoded it. The lowest (non-blank) were restaurant and hotel workers. The most interesting result to me is that the 'skilled' workers were on the low side, I would have suspected the opposite. There may be other reasons for this (or encoding issues).   
+```{r}
+#| warning: false
+(
+match_bias_plots$occupation +
+    labs(
+        title = 'Match Rating by Occupation',
+        y = 'Occupation'
+    )
+) %>% ggplotly
+```
+
+### Race
+This one is quite interesting as you would think 'white' would be more reliable. This has a flaw however, as this is the freedman's bureau. So anything encoded as 'white' is most likely misencoded, and will score extremely low. Mulatto being higher is interesting, however. Maybe shows a bias on the race recorded based on economic/social class? Not sure. 
+```{r}
+#| warning: false
+(
+match_bias_plots$race +
+    labs(
+        title = 'Match Rating by Race',
+        y = 'Race'
+       # x = 'Match Quality'
+    )
+) %>% ggplotly
+```
+
+
+:::
+
+
+## Projected Age vs Actual vs Match Quality
+
+This is a relatively simple graph as I wanted to test if the difference between ages officially in the linked-to records matched up with a simple age in freedman's bureau + time to that census calculation. This should ideally be very close with accurate matches. This result is quite puzzling, however, as it seems to be not all that significantly different. If anything, it is the opposite. 
+
+```{r}
+#| warning: false
+
+(
+freedman %>% 
+    select(starts_with('age'), match_quality, idnumber, year, race, gender, occupation) %>% 
+    filter(!is.na(age_recorded), !is.na(match_quality)) %>% 
+    mutate(
+        age_diff = abs(age_projected - age_recorded)
+    ) %>% 
+    filter(age_diff < 40) %>% 
+    ggplot(
+        aes(
+            y = age_diff, 
+            x = match_quality,
+            color = match_quality
+        ) 
+    ) + 
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       width = .5
+    ) + 
+    scale_color_viridis_c() + 
+    scale_x_continuous(n.breaks = 10) + 
+    labs(
+        title = 'Distance between projected and recorded ages by match quality',
+        subtitle = 'Only taken when recorded ages were available',
+        x = 'Match Quality',
+        y = 'Age Difference'
+    ) + theme(legend.position = 'none')
+
+) %>%  ggplotly
+```
+
+
+## Name String Distances
+
+This part is me testing the changes in people's names over time. Effectively, I wanted to see, when best linked, how similar the recorded strings of names were between each observation. This is more difficult to do with normal tools, so I used a string distance package. The dataset has more calculations in it, but I ended up using the Jaro Winkler (jw) method. This method always displays between 0 and 1. 0 means the two strings are identical, and 1 means they are completely different. 
+
+::: {.panel-tabset}
+
+
+## Overall
+This just shows the overall distribution to get a sense for it. Most seem to be relatively accurate, with last names being a lot closer to identical on average. I used a violin plot to show the whole distribution, as this is quite a skewed distribution and the mean would only tell you so much. 
+```{r}
+#| warning: false
+(
+name_dist %>%
+    ggplot(
+        aes(
+            fill = name_type,
+            color = name_type,
+            y = jw,
+            x = name_type,
+            group = name_type
+        )
+    ) +
+    geom_violin(alpha = .8
+                )+
+    stat_summary(
+          fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'errorbar',
+       width = .1,
+       alpha = .5,
+       color = 'black'
+    ) +
+    labs(
+        x = 'Name Type',
+        y = 'String Distance (Jaro Winkler)',
+        title = 'Distribution of string distances between best matched'
+    ) +
+    theme(legend.position = 'none')
+) %>% ggplotly 
+```
+
+
+## Match Quality
+The most direct one. A lower match quality should decrease how similar the name strings are as well. This is very clearly demonstrated below:
+
+```{r}
+#| warning: false
+(
+name_dist %>% 
+    ggplot(
+        aes(
+            color = name_type,
+            y = jw,
+            x = match_quality
+        )
+    ) +
+    geom_smooth(method = 'lm')+
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       size = 1
+    ) +
+  
+    theme(legend.position = 'none')+ 
+ 
+      labs(
+        x = 'If occupation category changed (blank if both blank)',
+        y = 'Mean String Distance (Jaro Winkler)',
+        title = 'Distribution of string distances by change in occupation',
+        subtitle = 'Effectively a proxy for how long between the two records'
+    ) + scale_x_continuous(n.breaks = 10) +
+    coord_cartesian(ylim = c(0, .3))
+)  %>% ggplotly
+```
+## Occupation
+
+When split by occupation, we see a few interesting things. Overall there is not a huge difference, but domestic and farm workers seem to fare quite a lot worse on average. Factory workers and student workers seem to perform quite well on average as well. Interestingly, skilled first names change quite a lot. 
+```{r}
+#| warning: false
+(
+name_dist %>% 
+    mutate(
+        occupation_orig = replace_na(occupation_orig, 'blank')
+    ) %>% 
+    ggplot(
+        aes(
+            color = name_type,
+            x = jw,
+            y = occupation_orig
+        )
+    ) +
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       size = 1.5
+    ) +
+    labs(
+        y = 'Occupation (1865)',
+        x = 'Mean String Distance (Jaro Winkler)',
+        title = 'String distances by occupation',
+        subtitle = 'Calculated between best matched.'
+    ) +
+    theme(legend.position = 'none')
+)  %>% ggplotly
+```
+## Age
+Extremely messy to say the least. How the JW statistic works is that 0 is no difference (identical) and 1 is them having zero in common. So bunches up a lot at the poles. Seems to not be all that significant. 
+```{r}
+#| warning: false
+#| fig-width: 8
+#| fig-height: 5
+(
+name_dist %>% 
+    filter(
+        !is.na(age_projected_orig)
+    ) %>% 
+    ggplot(
+        aes(
+            color = name_type,
+            x = jw,
+            y = age_projected_orig
+        )
+    ) +
+    geom_point(alpha = .6) +
+    
+    geom_smooth(method = 'lm', alpha = .5, na.rm = T, fill = 'lightgrey')+
+    geom_smooth(method = 'lm', alpha = 1, na.rm = T, se = F)+
+    labs(
+        y = 'Age in 1865',
+        x = 'Mean String Distance (Jaro Winkler)',
+        title = 'String distances by age',
+        subtitle = 'Calculated between best matched.'
+    ) +
+    theme(legend.position = 'none') 
+)  #%>% ggplotly
+```
+
+## Year
+The year of the matched census record. First year is always 1865. Effectively a proxy for how long between the two records. 
+```{r}
+#| warning: false
+#| fig-width: 8
+#| fig-height: 10
+(
+name_dist %>% 
+    filter(
+        !is.na(age_difference)
+    ) %>% 
+    mutate(age_difference = case_when(
+        age_difference == 5 ~ '1870',
+        age_difference == 15 ~ '1880',
+        age_difference == 35 ~ '1900',
+        TRUE ~ 'other'
+    )
+    ) %>% 
+    ggplot(
+        aes(
+            fill = name_type,
+            y = jw,
+            x = name_type
+        )
+    ) +
+  #  geom_violin()+
+    geom_violin(alpha = .6) +
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       size = 1
+    ) +
+  
+    theme(legend.position = 'none')+ 
+    facet_grid(~age_difference) +
+      labs(
+        x = 'Year Matched',
+        y = 'Mean String Distance (Jaro Winkler)',
+        title = 'Distribution of string distances by year matched',
+        subtitle = 'Effectively a proxy for how long between the two records'
+    ) 
+)  %>% ggplotly
+```
+## Change in Occupation
+A simple encoding where 'blank' means occupation was blank in both records, 'no' means they are not the same, and 'yes' means they are the same between years. Basically, 'Did they switch their occupation'?. 
+```{r}
+#| warning: false
+#| fig-width: 8
+#| fig-height: 10
+(
+name_dist %>% 
+    ggplot(
+        aes(
+            fill = name_type,
+            y = jw,
+            x = name_type
+        )
+    ) +
+    geom_violin(alpha = .6) +
+    stat_summary(
+       fun.data = 'mean_cl_boot',
+       na.rm = T,
+       geom = 'pointrange',
+       size = 1
+    ) +
+  
+    theme(legend.position = 'none')+ 
+    facet_grid(~same_job) +
+      labs(
+        x = 'If occupation category changed (blank if both blank)',
+        y = 'Mean String Distance (Jaro Winkler)',
+        title = 'Distribution of string distances by change in occupation',
+        subtitle = 'Effectively a proxy for how long between the two records'
+    ) 
+)  %>% ggplotly
+```
+
+
+:::
+
+# Unrelated Examples 
+
+## Dubois Inspired 
+
+All of these were either inspired by or almost exact recreations of graphics created by W. E. B. Du Bois.
+All of this (very messy, was not expecting to share this) code can be viewed under unrelated_figures/GOODWIN-source-code.html. This is just an interactive quarto document with all the code in viewable form with some notes. There is also GOODWIN-figure-notes.pdf that goes over data sourcing. 
+
+::: {.panel-tabset}
+
+### Migration Recreation
+
+This recreates it almost exactly but using the full 1900 census instead. 
+
+![Dubois Migration](unrelated_figures/lot-11931-no-08-GOODWIN.jpg)
+
+### Demographics Recreation
+This recreates a population pyramid he made, but this time using modern data. 
+![Dubois Demographics](unrelated_figures/lot-11931-no-53-GOODWIN.jpg)
+
+### Original (Inspired)
+A totally modern graphic I made in the same project. 
+![Dubois Demographics](unrelated_figures/original-GOODWIN.jpg)
+
+:::
+
+## Deep dive into econometrics of this and similar problems
+
+This is *very* much optional viewing, but I have a term paper going into the details of this. It uses some bits from this dataset, but primarily pulls from the much more extensive census linking project. I was originally going to use that here, but decided against it as it would require several gigabytes of files and wouldn't be that messy anyways (not as much to do wrangling wise). If you want to, it should be shown as an iframe below or you can find it in unrelated_figures/Regional demographic and mobility trends in Virginia.pdf. I also have in the same directory a quarto file called deep_dive_code.qmd that has the (very messy) code. It will not run as there is no source files. I drew quite a bit from there for this whole code sample though (well not a ton but for the starting point I did). Again, very much optional ahah. 
+
+
+
+<iframe src="./unrelated_figures/Regional demographic and mobility trends in Virginia.pdf" title="foo" width="700" height="800"></iframe>
+
