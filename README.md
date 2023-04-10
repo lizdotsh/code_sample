@@ -1,6 +1,6 @@
 # NOTE:
 
-This is a code sample I prepared for an interview that had a particular syntax and format wanted. I put a decent amount of time into making it and collecting up a lot of my work so I figured I may as well just post it, as it has more updated work than most things. The simplest way to view this would be to look at visualizations/visualization.html as it has all other code inside it if you expand the code chunks.  
+This is a code sample I prepared for an interview that had a particular syntax and format wanted. I put a decent amount of time into making it and collecting up a lot of my work so I figured I may as well just post it, as it has more updated work than most things. The simplest way to view this would be to look at visualizations/visualization.html as it has all other code inside it if you expand the code chunks. You will likely have to download the html file locally. 
 
 Restrictions of what the position wanted meant I did everything here in R, but I am also proficient in Python based tooling (my current public code is a bit outdated at the moment for python, though). 
 
