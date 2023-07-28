@@ -66,6 +66,7 @@ compact it is. I don't explicitly call map() very often but I do a couple times.
 ### tidystringdist
 
 A package for implimenting string distance algorithsms. Basically it's just stringdist with a UX I slightly prefer. 
+
 ## Audience/output file 
 
 This output file is mostly just a cleaned up file with a much more 'tidy' format. The input file is quite messy, and it would be difficult to do any significant analysis with it. The primary difference is that most of the variables are cleaned up and refactored, and I used pivot_longer() so that each year is it's own discrete row. The main thing this allows is it makes it significantly easier to incorporate time in your analysis. You can simply group by ID number and then each group will be one person with each row being an observation. The refactoring was mainly around two thingsss: occupation and location. I used regex to split up the names and locations into separate columns for first and last and city/state. This also cleaned up their formatting significantly, and I checked the state level factoring by using the state.name dataset. 
